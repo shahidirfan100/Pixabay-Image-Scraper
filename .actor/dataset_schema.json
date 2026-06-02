@@ -1,0 +1,73 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "title",
+          "mediaType",
+          "width",
+          "height",
+          "tags",
+          "likes",
+          "views",
+          "downloads",
+          "uploadDate",
+          "username",
+          "pageUrl"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Title",
+            "format": "text"
+          },
+          "mediaType": {
+            "label": "Type",
+            "format": "text"
+          },
+          "width": {
+            "label": "Width",
+            "format": "number"
+          },
+          "height": {
+            "label": "Height",
+            "format": "number"
+          },
+          "tags": {
+            "label": "Tags",
+            "format": "text"
+          },
+          "likes": {
+            "label": "Likes",
+            "format": "number"
+          },
+          "views": {
+            "label": "Views",
+            "format": "number"
+          },
+          "downloads": {
+            "label": "Downloads",
+            "format": "number"
+          },
+          "uploadDate": {
+            "label": "Uploaded",
+            "format": "text"
+          },
+          "username": {
+            "label": "User",
+            "format": "text"
+          },
+          "pageUrl": {
+            "label": "Page URL",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}

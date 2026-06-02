@@ -1,0 +1,53 @@
+{
+  "title": "Pixabay Image Scraper",
+  "description": "Scrape images from Pixabay using their internal bootstrap API. Provide either a Pixabay search URL or keyword. Supports pagination and proxy configuration.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "url": {
+      "title": "Pixabay URL",
+      "type": "string",
+      "description": "Full Pixabay search URL, e.g. https://pixabay.com/images/search/nature/ — overrides keyword if provided.",
+      "editor": "textfield",
+      "prefill": ""
+    },
+    "keyword": {
+      "title": "Keyword",
+      "type": "string",
+      "description": "Search keyword(s), e.g. 'nature', 'sunset', 'city skyline'. Used if URL is not provided.",
+      "editor": "textfield",
+      "prefill": "nature"
+    },
+    "results_wanted": {
+      "title": "Maximum number of images",
+      "type": "integer",
+      "description": "Maximum number of images to collect. Leave empty to collect all available.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 20,
+      "prefill": 20
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "Maximum number of pages to scrape. Each page returns ~100 images.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 10
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Proxy configuration (Residential group recommended to bypass Cloudflare 403 blocks). Completely optional — toggle off to run without a proxy.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
