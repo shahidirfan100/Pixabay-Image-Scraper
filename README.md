@@ -1,29 +1,29 @@
 # Pixabay Image Scraper
 
-Extract high-quality images from Pixabay with ease. Collect image data including titles, URLs, tags, dimensions, and engagement metrics at scale. Perfect for stock photo research, content planning, visual trend analysis, and building curated image datasets.
+Extract rich Pixabay image search results with metadata that goes beyond basic titles and URLs. Collect image details, search result metrics, uploader information, download links, and quality flags in a clean dataset for research, trend tracking, and content planning.
 
 ## Features
 
-- **Keyword Search** — Find images by keyword, location, or any search term
-- **URL-Based Extraction** — Scrape from any existing Pixabay search URL
-- **Pagination Support** — Automatically collects across multiple pages to reach your desired count
-- **Rich Image Data** — Captures titles, image URLs, tags, dimensions, likes, views, downloads, and more
-- **Deduplication** — Each image is collected once with unique ID tracking
-- **Flexible Limits** — Control maximum images and pages to suit your needs
+- **Structured Result Extraction** — Collects data from Pixabay's structured search payload instead of relying on brittle card parsing
+- **Richer Metadata** — Returns image dimensions, engagement counts, descriptive fields, uploader details, and quality indicators
+- **Duplicate Protection** — Skips repeated records across pages using stable image identifiers
+- **Clean Output** — Omits null, empty, and incomplete records before saving to the dataset
+- **Flexible Search Input** — Supports keyword search, location-enhanced search terms, and direct Pixabay search URLs
+- **Pagination Control** — Stops at your requested image count or page limit
 
 ## Use Cases
 
-### Stock Photo Research
-Analyze popular images, tags, and engagement metrics to identify trending visual content. Understand what types of images perform best and discover gaps in available stock photography.
+### Visual Trend Research
+Track which styles, subjects, and image types are popular for a keyword. Use engagement counts, tags, and descriptive metadata to compare search trends over time.
 
 ### Content Planning
-Build collections of reference images for blog posts, social media campaigns, or creative projects. Gather visual inspiration organized by topic with direct image URLs.
+Build reference collections for blog posts, social campaigns, or design work. Search by topic and keep direct image links, download paths, and creator details together.
 
-### Visual Trend Analysis
-Track image popularity over time using likes, views, and download counts. Identify emerging visual trends across categories and keywords for data-driven creative decisions.
+### Dataset Creation
+Create structured datasets for analysis, tagging workflows, or internal cataloging. The output includes both image-level fields and uploader-level context.
 
-### AI and ML Training Data
-Collect labeled image datasets with metadata including tags, dimensions, and upload dates. Build structured datasets for training image classification or tagging models.
+### Creative Market Monitoring
+Review result pages for quality signals such as editor's choice flags, AI-generated labels, media type, and result volume to understand the current image landscape.
 
 ---
 
@@ -31,40 +31,56 @@ Collect labeled image datasets with metadata including tags, dimensions, and upl
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `url` | String | No | — | Full Pixabay search URL to scrape (overrides keyword) |
-| `keyword` | String | No | — | Search keyword, e.g. "nature", "sunset", "city skyline" |
-| `location` | String | No | — | Location to append to search, e.g. "Tokyo", "New York" |
-| `results_wanted` | Integer | No | `100` | Maximum number of images to collect |
-| `max_pages` | Integer | No | `10` | Maximum number of pages to scrape (~100 images per page) |
-| `proxyConfiguration` | Object | No | — | Proxy settings (Apify Residential recommended) |
+| `url` | String | No | — | Full Pixabay search URL to scrape. Takes priority over keyword input. |
+| `keyword` | String | No | — | Search term such as `nature`, `sunset`, or `city skyline`. |
+| `location` | String | No | — | Extra search context appended to the keyword, such as `Tokyo` or `Pakistan`. |
+| `results_wanted` | Integer | No | `20` | Maximum number of unique images to collect. |
+| `max_pages` | Integer | No | `10` | Maximum number of result pages to visit. |
+| `proxyConfiguration` | Object | No | — | Proxy settings for more reliable access when needed. |
 
 ---
 
 ## Output Data
 
-Each item in the dataset contains:
+Each dataset item can contain:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | Number | Unique Pixabay image ID |
-| `title` | String | Image title |
-| `mediaType` | String | Media type (photo, illustration, etc.) |
+| `mediaType` | String | Media type such as photo, illustration, or vector |
+| `mediaSubType` | Number | Pixabay media subtype code |
+| `mediaDescriptiveType` | String | Human-readable media category |
 | `width` | Number | Image width in pixels |
 | `height` | Number | Image height in pixels |
-| `imageUrl_small` | String | Small/1x resolution image URL |
-| `imageUrl_large` | String | Large/2x resolution image URL |
-| `downloadUrl` | String | Direct download URL |
-| `tags` | String | Comma-separated tags |
-| `likes` | Number | Number of likes |
-| `comments` | Number | Number of comments |
-| `views` | Number | Number of views |
-| `downloads` | Number | Number of downloads |
-| `editorsChoice` | Boolean | Whether marked as editor's choice |
-| `aiGenerated` | Boolean | Whether AI-generated |
-| `uploadDate` | String | Date the image was uploaded |
-| `username` | String | Uploader's username |
-| `profileUrl` | String | Link to uploader's profile |
-| `pageUrl` | String | Direct link to the image page on Pixabay |
+| `uploadDate` | String | Upload timestamp returned by Pixabay |
+| `name` | String | Pixabay display name for the asset |
+| `title` | String | Download-oriented title text |
+| `alt` | String | Accessible alt text from the search result |
+| `description` | String | Description text when available |
+| `pageUrl` | String | Direct Pixabay page URL for the image |
+| `href` | String | Original relative page path |
+| `imageUrl_small` | String | Smaller image URL |
+| `imageUrl_large` | String | Larger image URL |
+| `downloadUrl` | String | Download path expanded to a full URL |
+| `tags` | String | Comma-separated keyword tags |
+| `likeCount` | Number | Number of likes |
+| `commentCount` | Number | Number of comments |
+| `viewCount` | Number | Number of views |
+| `downloadCount` | Number | Number of downloads |
+| `isEditorsChoice` | Boolean | Whether Pixabay marks the asset as editor's choice |
+| `isAiGenerated` | Boolean | Whether the asset is marked as AI-generated |
+| `nsfw` | Boolean | Whether the asset is flagged as sensitive |
+| `vector` | Boolean | Whether the asset is a vector |
+| `isLowQuality` | Boolean | Quality warning flag |
+| `qualityStatus` | Number | Pixabay quality status code |
+| `username` | String | Uploader username |
+| `profileUrl` | String | Full uploader profile URL |
+| `user_id` | Number | Uploader ID |
+| `user_avatarSrc` | String | Uploader avatar image URL |
+| `user_isAvailableForHire` | Boolean | Hire availability flag |
+| `user_isActive` | Boolean | Uploader active status |
+| `user_donation_paypal` | String | Donation URL when provided |
+| `canvaRetouchUrl` | String | Edit-in-Canva link when available |
 
 ---
 
@@ -72,50 +88,32 @@ Each item in the dataset contains:
 
 ### Basic Keyword Search
 
-Collect 10 nature images:
-
 ```json
 {
     "keyword": "nature",
-    "results_wanted": 10,
-    "max_pages": 1
+    "results_wanted": 20,
+    "max_pages": 2
 }
 ```
 
-### Search by URL
-
-Scrape images from an existing Pixabay search URL:
-
-```json
-{
-    "url": "https://pixabay.com/images/search/sunset/",
-    "results_wanted": 50,
-    "max_pages": 3
-}
-```
-
-### Keyword with Location
-
-Search for images with a location filter:
+### Search With Extra Context
 
 ```json
 {
     "keyword": "cherry blossom",
     "location": "Tokyo",
-    "results_wanted": 100,
-    "max_pages": 5
+    "results_wanted": 40,
+    "max_pages": 3
 }
 ```
 
-### Large Collection
-
-Collect up to 500 images across many pages:
+### Existing Pixabay Search URL
 
 ```json
 {
-    "keyword": "mountain landscape",
-    "results_wanted": 500,
-    "max_pages": 10
+    "url": "https://pixabay.com/images/search/mountain-landscape/",
+    "results_wanted": 50,
+    "max_pages": 4
 }
 ```
 
@@ -125,20 +123,32 @@ Collect up to 500 images across many pages:
 
 ```json
 {
-    "id": 7373484,
-    "title": "Landscape Nature Background",
+    "id": 7133867,
     "mediaType": "photo",
-    "width": 6000,
-    "height": 4000,
-    "imageUrl_small": "https://cdn.pixabay.com/photo/2022/08/08/19/36/landscape-7373484_1280.jpg",
-    "imageUrl_large": "https://cdn.pixabay.com/photo/2022/08/08/19/36/landscape-7373484_1280.jpg",
-    "tags": "landscape, nature, background, tropical, rainbow",
-    "likes": 142,
-    "views": 18234,
-    "downloads": 89,
-    "uploadDate": "2022-08-08",
-    "username": "photographer_name",
-    "pageUrl": "https://pixabay.com/photos/landscape-rainbow-tropical-atoll-7373484/"
+    "mediaSubType": 1,
+    "mediaDescriptiveType": "photo",
+    "width": 3150,
+    "height": 2100,
+    "uploadDate": "2026-06-02T10:22:48.283309",
+    "name": "Sunset, Sand, Beach, Islands",
+    "title": "Download free HD stock image of Sunset Sand",
+    "alt": "Free Sunset Sand photo and picture",
+    "pageUrl": "https://pixabay.com/photos/sunset-sand-beach-islands-leaf-7133867/",
+    "imageUrl_small": "https://cdn.pixabay.com/photo/2022/04/15/07/58/sunset-7133867_640.jpg",
+    "imageUrl_large": "https://cdn.pixabay.com/photo/2022/04/15/07/58/sunset-7133867_1280.jpg",
+    "downloadUrl": "https://pixabay.com/images/download/x-7133867_1920.jpg",
+    "tags": "Sunset, Sand, Beach",
+    "likeCount": 875,
+    "commentCount": 144,
+    "viewCount": 415881,
+    "downloadCount": 376185,
+    "isEditorsChoice": true,
+    "isAiGenerated": false,
+    "username": "Kanenori",
+    "profileUrl": "https://pixabay.com/users/kanenori-4749850/",
+    "user_id": 4749850,
+    "user_avatarSrc": "https://cdn.pixabay.com/user/2023/03/30/07-49-26-304_96x96.jpg",
+    "canvaRetouchUrl": "https://canva.com/content-partner/?utm_medium=partner&utm_source=pixabay&utm_campaign=retouch_in_canva_edit_image&image-url=https%3A//pixabay.com/get/g6f4b1d4e20e2b5841de54991192c08a9aed5c39d4ab77f74e4d07e79408e8edd51ccb1a4df4784ab45c3280aff3d94ae_1920.jpg%3Flonglived%3D&external-id=7133867&canva-media-id="
 }
 ```
 
@@ -146,22 +156,20 @@ Collect up to 500 images across many pages:
 
 ## Tips for Best Results
 
-### Start Small for Testing
-- Begin with `results_wanted: 10` and `max_pages: 1` to verify your search
-- Increase limits once you confirm the results match your needs
+### Start With Smaller Runs
 
-### Use Specific Keywords
-- Combine keywords for better results, e.g. "golden hour beach sunset"
-- Add location filters to narrow geographic results
+- Use `results_wanted: 20` to validate a search quickly
+- Increase the limit after confirming the keyword or URL returns the right assets
 
-### Choose the Right Proxy
-- Residential proxies are recommended for reliable access
-- Set `proxyConfiguration` with Apify Residential proxy group
+### Use Focused Search Terms
 
-### Handle Large Collections
-- Each page returns approximately 100 images
-- Set `max_pages` accordingly for your target count
-- The scraper stops automatically when `results_wanted` is reached
+- Specific topics usually return cleaner datasets than broad one-word searches
+- Add `location` when you want geographic context included in the search
+
+### Set Reasonable Page Limits
+
+- Each page can contain many records, so a small `max_pages` value is often enough
+- The actor stops automatically once the requested number of unique items is reached
 
 ---
 
@@ -169,40 +177,42 @@ Collect up to 500 images across many pages:
 
 Connect your data with:
 
-- **Google Sheets** — Export for analysis and sharing
-- **Airtable** — Build searchable image databases
-- **Slack** — Get notifications when scraping completes
-- **Webhooks** — Send results to custom endpoints
-- **Make** — Create automated workflows with image data
-- **Zapier** — Trigger actions based on new results
+- **Google Sheets** — Review tags, creators, and engagement data in a spreadsheet
+- **Airtable** — Build searchable reference libraries for creative work
+- **Webhooks** — Send results to downstream systems automatically
+- **Make** — Trigger enrichment or reporting workflows
+- **Zapier** — Route new records into business tools
 
 ### Export Formats
 
-Download data in multiple formats:
-
-- **JSON** — For developers and APIs
+- **JSON** — For applications and automation
 - **CSV** — For spreadsheet analysis
-- **Excel** — For business reporting
+- **Excel** — For reporting and sharing
 - **XML** — For system integrations
 
 ---
 
 ## Frequently Asked Questions
 
-### How many images can I collect?
-You can collect up to all available search results. Pixabay typically returns thousands of results for popular keywords. Set `results_wanted` to control the limit.
+### Does the actor skip duplicate records?
 
-### Can I search by category or color?
-This scraper supports keyword-based and URL-based search. For category or color filtering, use Pixabay's website to build the URL first, then pass it as the `url` parameter.
+Yes. Records are deduplicated before saving so repeated items across pages are not written to the dataset twice.
 
-### What if some fields are missing?
-Some fields (like likes, views, downloads) may be absent if the source doesn't provide them. The scraper only includes fields with actual values — no null or empty fields.
+### What happens when a field is empty?
 
-### Does the scraper handle pagination automatically?
-Yes. The scraper automatically navigates through pages until it reaches your `results_wanted` limit or `max_pages` cap.
+Empty, null, and incomplete values are filtered out automatically, so the dataset stays cleaner and easier to use.
 
-### Can I scrape a specific photographer's images?
-Yes. Navigate to a photographer's page on Pixabay, copy the URL, and provide it as the `url` input parameter.
+### Can I scrape using a Pixabay URL instead of a keyword?
+
+Yes. Provide a Pixabay search URL through `url` or `startUrl` and the actor will continue pagination from that search.
+
+### How many results can I collect?
+
+You can collect up to the limit set in `results_wanted`, subject to the available search results and your `max_pages` setting.
+
+### Are uploader details included?
+
+Yes. The dataset can include uploader usernames, profile URLs, avatar URLs, and some availability or donation fields when Pixabay provides them.
 
 ---
 
@@ -220,4 +230,4 @@ For issues or feature requests, contact support through the Apify Console.
 
 ## Legal Notice
 
-This actor is designed for legitimate data collection purposes. Users are responsible for ensuring compliance with Pixabay's terms of service and applicable laws. Use data responsibly and respect rate limits.
+This actor is designed for legitimate data collection purposes. Users are responsible for ensuring compliance with Pixabay terms and applicable laws when collecting and using data.

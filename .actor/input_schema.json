@@ -41,10 +41,7 @@
       "description": "Proxy configuration (Residential group recommended to bypass Cloudflare 403 blocks). Completely optional — toggle off to run without a proxy.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
+        "useApifyProxy": false
       }
     }
   },

@@ -1,105 +1,32 @@
-# Pixabay API Discovery Report
+## Selected API
 
-## Target Website
-**URL:** `https://pixabay.com/images/search/nature/`
+- Endpoint: `GET https://pixabay.com/images/search/<query>/?pagi=<pageNumber>` with headers:
+  `Accept: application/json`, `x-fetch-bootstrap: 1`, `x-bootstrap-cache-miss: 1`
+- Method: `GET`
+- Auth: No account login required, but Cloudflare/session cookies from the browser session are required
+- Pagination: `pagi=<pageNumber>` query parameter on the search URL
+- Fields available:
+  `id`, `mediaType`, `mediaSubType`, `mediaDescriptiveType`, `sources.1x`, `sources.2x`, `sources.downloadUrl`, `nsfw`, `isAiGenerated`, `width`, `height`, `uploadDate`, `href`, `alt`, `title`, `description`, `name`, `tagList`, `likeCount`, `commentCount`, `vector`, `isEditorsChoice`, `isLowQuality`, `qualityStatus`, `user.id`, `user.username`, `user.avatarSrc`, `user.profileUrl`, `user.donation.paypal`, `user.isActive`, `viewCount`, `downloadCount`, `canvaRetouchUrl`
+- Fields currently missing in the previous actor:
+  `mediaSubType`, `mediaDescriptiveType`, `href`, `alt`, `description`, `title`, `vector`, `isLowQuality`, `qualityStatus`, `user_id`, `user_avatarSrc`, `user_donation_paypal`, `user_isAvailableForHire`, `user_isActive`, `canvaRetouchUrl`
+- Field count: 30+ useful fields vs roughly 18 in the previous output
 
-## API Endpoints Discovered
+## Discovery Notes
 
-### 1. Bootstrap API (Primary — Used by Actor)
-
-**Endpoint:** `https://pixabay.com/bootstrap/{hash}.json`
-
-**Discovery Method:** Browser network analysis — Pixabay embeds a hash-based URL in the page source as `window.__BOOTSTRAP_URL__`. This JSON endpoint returns the full search results data.
-
-**Authentication:** Requires browser session cookies (Cloudflare-protected). The actor uses Patchright Chrome to load the page, clear CF challenge, then fetches this API directly from within the browser context using `page.evaluate(fetch(...))`.
-
-**Request:**
-```
-GET https://pixabay.com/bootstrap/{hash}.json
-Headers: Accept: application/json, credentials: same-origin
-```
-
-**Response Structure:**
-```json
-{
-  "page": {
-    "results": [
-      {
-        "id": 7373484,
-        "name": "Landscape Nature Background",
-        "mediaType": "photo",
-        "width": 6000,
-        "height": 4000,
-        "sources": {
-          "1x": "https://cdn.pixabay.com/photo/.../image_1280.jpg",
-          "2x": "https://cdn.pixabay.com/photo/.../image_1920.jpg",
-          "downloadUrl": "/get/..."
-        },
-        "tagList": ["landscape", "nature", "background"],
-        "likeCount": 142,
-        "viewCount": 18234,
-        "downloadCount": 89,
-        "commentCount": 5,
-        "isEditorsChoice": false,
-        "isAiGenerated": false,
-        "nsfw": false,
-        "uploadDate": "2022-08-08",
-        "user": {
-          "username": "photographer_name",
-          "profileUrl": "/users/photographer_name/"
-        }
-      }
-    ],
-    "pages": 50,
-    "total": 5000
-  }
-}
-```
-
-**Pagination:** `?pagi=N` query parameter on the search URL (e.g., `?pagi=2` for page 2).
-
-### 2. JSON-LD Structured Data (Fallback)
-
-**Type:** `application/ld+json` script tags in HTML
-
-**Schema:** `ImageObject` (schema.org)
-
-**Fields Available:** `name`, `contentUrl`, `thumbnailUrl`, `acquireLicensePage`
-
-**Note:** Limited data (no dimensions, tags, engagement metrics). Used only when bootstrap API is unavailable.
-
-## Data Fields Extracted
-
-| Field | Source | Description |
-|-------|--------|-------------|
-| `id` | Bootstrap API | Unique image ID |
-| `title` | `name` field | Image title |
-| `mediaType` | Bootstrap API | photo, illustration, etc. |
-| `width` | Bootstrap API | Width in pixels |
-| `height` | Bootstrap API | Height in pixels |
-| `imageUrl_small` | `sources.1x` | Small resolution URL |
-| `imageUrl_large` | `sources.2x` | Large resolution URL |
-| `downloadUrl` | `sources.downloadUrl` | Direct download URL |
-| `tags` | `tagList` array | Comma-separated tags |
-| `likes` | `likeCount` | Number of likes |
-| `comments` | `commentCount` | Number of comments |
-| `views` | `viewCount` | Number of views |
-| `downloads` | `downloadCount` | Number of downloads |
-| `editorsChoice` | `isEditorsChoice` | Editor's pick flag |
-| `aiGenerated` | `isAiGenerated` | AI-generated flag |
-| `uploadDate` | Bootstrap API | Upload date |
-| `username` | `user.username` | Uploader username |
-| `profileUrl` | `user.profileUrl` | Uploader profile link |
-| `pageUrl` | Constructed from ID | Pixabay page URL |
-
-## Anti-Bot Protection
-
-**Cloudflare:** Pixabay uses Cloudflare challenge pages to protect the bootstrap API. Direct HTTP requests (gotScraping, fetch, curl) receive `403 Forbidden` with `cf-mitigated: challenge`.
-
-**Bypass Method:** Patchright Chrome (patched Playwright fork) loads the page in a real browser, which auto-resolves the CF challenge. The bootstrap API is then fetched from within the browser context using the established CF session cookies.
-
-## Blocking Patterns Observed
-
-- Direct HTTP to bootstrap URL → 403 (Cloudflare challenge)
-- `window.__BOOTSTRAP__` is `undefined` for some search terms (data not embedded inline)
-- `window.__BOOTSTRAP_URL__` is always present in page source
+- Existing actor audit:
+  The previous actor already depended on Pixabay's structured bootstrap data, but it still carried fallback parsing paths and only mapped a subset of fields.
+- URLScan result:
+  Public search found a historical Pixabay search-page scan (`aa9c64b9-a4e1-41fc-be7e-3580462ade8d`) for `https://pixabay.com/images/search/nature/`.
+- URLScan limitation:
+  The detailed result endpoint now returned `{"warning":"You're not logged in!"}` without authentication, so anonymous request replay was no longer available from URLScan alone.
+- Direct page inspection:
+  Plain HTTP fetches returned a Cloudflare interstitial, so browser inspection was required as the updater skill's last resort.
+- Browser findings:
+  The live page makes a second same-URL request with `Accept: application/json` and `x-fetch-bootstrap: 1`. That response contains the structured `page.results` payload with 100+ records on page 1 and a stable `pagi` pagination pattern.
+- Weaker candidates rejected:
+  - `/bootstrap/<hash>.json`: requested by the frontend, but currently returning `404` in the live browser session.
+  - `window.__BOOTSTRAP__`: present in Chrome DevTools inspection, but not reliable in Patchright runtime and therefore not suitable as the primary extraction path.
+  - `application/ld+json`: usable only as a reduced fallback with far fewer fields.
+  - DOM parsing: unnecessary because the full structured payload is already available.
+- HTTP-only viability:
+  Not reliable at the moment because plain requests hit Cloudflare. The actor therefore keeps the browser for session establishment, then fetches the JSON payload directly inside that authenticated browser session instead of parsing DOM content.
