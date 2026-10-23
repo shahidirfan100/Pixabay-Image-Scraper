@@ -1,50 +1,59 @@
 {
-  "title": "Pixabay Image Scraper",
-  "description": "Scrape images from Pixabay using their internal bootstrap API. Provide either a Pixabay search URL or keyword. Supports pagination and proxy configuration.",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "url": {
-      "title": "Pixabay URL",
-      "type": "string",
-      "description": "Full Pixabay search URL, e.g. https://pixabay.com/images/search/nature/ — overrides keyword if provided.",
-      "editor": "textfield",
-      "prefill": ""
+    "title": "Pixabay Image Scraper",
+    "description": "Collect image metadata from Pixabay image search results. Search by keyword, add a location context, or provide a Pixabay image search URL.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "keyword": {
+            "title": "Keyword",
+            "type": "string",
+            "description": "Search term such as nature, sunset, or city skyline. Used when no URL is supplied.",
+            "editor": "textfield",
+            "default": "nature",
+            "prefill": "nature"
+        },
+        "location": {
+            "title": "Location context",
+            "type": "string",
+            "description": "Optional place name added to the keyword search phrase, for example Tokyo or Pakistan. Ignored when a URL is supplied.",
+            "editor": "textfield"
+        },
+        "url": {
+            "title": "Pixabay search URL",
+            "type": "string",
+            "description": "Full Pixabay image search URL, for example https://pixabay.com/images/search/nature/. Takes priority over keyword and location. Individual image pages are not supported.",
+            "editor": "textfield"
+        },
+        "startUrl": {
+            "title": "Alternate search URL",
+            "type": "string",
+            "description": "Alternate full Pixabay image search URL for existing workflows. Takes priority over url.",
+            "editor": "textfield"
+        },
+        "results_wanted": {
+            "title": "Maximum number of images",
+            "type": "integer",
+            "description": "Maximum number of unique images to save.",
+            "minimum": 1,
+            "editor": "number",
+            "default": 20
+        },
+        "max_pages": {
+            "title": "Maximum number of pages",
+            "type": "integer",
+            "description": "Maximum number of result pages to process. Each page contains about 100 images.",
+            "minimum": 1,
+            "editor": "number",
+            "default": 10
+        },
+        "proxyConfiguration": {
+            "title": "Proxy configuration",
+            "type": "object",
+            "description": "Optional proxy settings. The Actor works without a proxy, and Apify Proxy requires a cloud run.",
+            "editor": "proxy",
+            "default": {}
+        }
     },
-    "keyword": {
-      "title": "Keyword",
-      "type": "string",
-      "description": "Search keyword(s), e.g. 'nature', 'sunset', 'city skyline'. Used if URL is not provided.",
-      "editor": "textfield",
-      "prefill": "nature"
-    },
-    "results_wanted": {
-      "title": "Maximum number of images",
-      "type": "integer",
-      "description": "Maximum number of images to collect. Leave empty to collect all available.",
-      "minimum": 1,
-      "editor": "number",
-      "default": 20,
-      "prefill": 20
-    },
-    "max_pages": {
-      "title": "Maximum number of pages",
-      "type": "integer",
-      "description": "Maximum number of pages to scrape. Each page returns ~100 images.",
-      "minimum": 1,
-      "editor": "number",
-      "default": 10
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Proxy configuration (Residential group recommended to bypass Cloudflare 403 blocks). Completely optional — toggle off to run without a proxy.",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": false
-      }
-    }
-  },
-  "required": [],
-  "additionalProperties": false
+    "required": [],
+    "additionalProperties": false
 }

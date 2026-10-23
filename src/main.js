@@ -1,400 +1,436 @@
 import { Actor, Dataset, log } from 'apify';
-import { randomBytes } from 'crypto';
-import os from 'os';
-import { chromium } from 'patchright';
-import path from 'path';
+import { Impit } from 'impit';
+
+import {
+    buildPageUrl,
+    buildSearchUrl,
+    detectChallenge,
+    extractBootstrapPath,
+    getDedupKey,
+    mapResult,
+    normalizeSearchUrl,
+    normalizeText,
+    parseJsonLdImages,
+    parseSearchPayload,
+    readPositiveInt,
+    selectImageResults,
+} from './pixabay.js';
+
+// Read API_Discovery.md before changing the request flow or profile order.
+const DEFAULT_KEYWORD = 'nature';
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_ATTEMPTS_PER_PAGE = 10;
+const MAX_RETRIES_PER_REQUEST = 2;
+const PAGE_FAILURE_LIMIT = 3;
+
+const PROFILES = [
+    'chrome151',
+    'chrome142',
+    'chrome136',
+    'chrome124',
+    'chrome',
+    'firefox',
+    'firefox144',
+    'firefox135',
+    'ios18',
+    'okhttp5',
+];
+
+const STRATEGIES = ['json', 'html'];
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function sleep(milliseconds) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+    });
+}
+
+function shortError(error) {
+    const message = error?.message ? String(error.message) : String(error);
+    const firstLine = message.split('\n').find((line) => line.trim()) || 'Unknown error';
+    const compact = firstLine
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[.;]+$/, '');
+    return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
+}
+
+function backoffDelay(attempt) {
+    const base = Math.min(8000, 600 * 2 ** attempt);
+    return base + Math.floor(Math.random() * 300);
+}
+
+function parseRetryAfter(value) {
+    if (!value) return 0;
+
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 10000);
+
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return Math.min(Math.max(timestamp - Date.now(), 0), 10000);
+
+    return 0;
+}
+
+function jsonHeaders(referer) {
+    return {
+        Accept: 'application/json',
+        'x-fetch-bootstrap': '1',
+        'x-bootstrap-cache-miss': '1',
+        Referer: referer,
+        Cookie: 'g_rated=1',
+    };
+}
+
+function htmlHeaders(referer) {
+    return {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        Referer: referer,
+        Cookie: 'g_rated=1',
+    };
+}
+
+async function readJsonResponse(response) {
+    const text = await response.text();
+    const challenge = detectChallenge(response.status, text);
+    if (challenge) throw new Error(challenge);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('json')) {
+        throw new Error(`Expected JSON but received ${contentType || 'an unknown content type'}`);
+    }
+
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw new Error('Pixabay returned malformed JSON.');
+    }
+}
+
+async function readHtmlResponse(response) {
+    const text = await response.text();
+    const challenge = detectChallenge(response.status, text);
+    if (challenge) throw new Error(challenge);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!text.includes('<html')) throw new Error('Pixabay did not return an HTML page.');
+    return text;
+}
+
+class PixabayEngine {
+    constructor(proxyConfiguration) {
+        this.proxyConfiguration = proxyConfiguration;
+        this.clients = new Map();
+        this.activeProfile = 0;
+        this.activeStrategy = 0;
+        this.switches = 0;
+    }
+
+    async getClient(profile) {
+        const existing = this.clients.get(profile);
+        if (existing) return existing;
+
+        const proxyUrl = this.proxyConfiguration ? await this.proxyConfiguration.newUrl() : undefined;
+        const client = new Impit({
+            browser: profile,
+            timeout: REQUEST_TIMEOUT_MS,
+            ...(proxyUrl ? { proxyUrl } : {}),
+        });
+
+        this.clients.set(profile, client);
+        return client;
+    }
+
+    async request(url, headers, profile) {
+        const client = await this.getClient(profile);
+        let lastError;
+
+        for (let attempt = 0; attempt <= MAX_RETRIES_PER_REQUEST; attempt += 1) {
+            try {
+                const response = await client.fetch(url, { headers, redirect: 'follow' });
+
+                if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_RETRIES_PER_REQUEST) {
+                    const wait = parseRetryAfter(response.headers.get('retry-after')) || backoffDelay(attempt);
+                    log.warning(`Pixabay returned HTTP ${response.status}. Retrying in ${Math.round(wait / 1000)}s.`);
+                    await sleep(wait);
+                    continue;
+                }
+
+                return response;
+            } catch (error) {
+                lastError = error;
+                if (attempt < MAX_RETRIES_PER_REQUEST) {
+                    const wait = backoffDelay(attempt);
+                    log.warning(
+                        `Pixabay request failed: ${shortError(error)}. Retrying in ${Math.round(wait / 1000)}s.`,
+                    );
+                    await sleep(wait);
+                }
+            }
+        }
+
+        throw lastError || new Error('Pixabay request failed without a response.');
+    }
+
+    async fetchJson(profile, pageUrl, baseUrl) {
+        const response = await this.request(pageUrl, jsonHeaders(baseUrl), profile);
+        const json = await readJsonResponse(response);
+        const payload = parseSearchPayload(json);
+
+        if (!payload) throw new Error('JSON response did not contain page results.');
+
+        if (payload.total === 0 && payload.results.length === 0) {
+            return { results: [], total: 0, pages: 0, validEmpty: true, profile, strategy: 'json' };
+        }
+
+        const results = selectImageResults(payload.results);
+        if (!results.length) {
+            throw new Error(
+                `JSON response contained ${payload.results.length} records but none were usable image records.`,
+            );
+        }
+
+        return {
+            results,
+            total: payload.total,
+            pages: payload.pages,
+            validEmpty: false,
+            profile,
+            strategy: 'json',
+        };
+    }
+
+    async fetchHtml(profile, pageUrl, baseUrl) {
+        const response = await this.request(pageUrl, htmlHeaders(baseUrl), profile);
+        const html = await readHtmlResponse(response);
+        const bootstrapPath = extractBootstrapPath(html);
+
+        if (bootstrapPath) {
+            try {
+                const bootstrapUrl = new URL(bootstrapPath, baseUrl).href;
+                const bootstrapResponse = await this.request(bootstrapUrl, jsonHeaders(pageUrl), profile);
+                const json = await readJsonResponse(bootstrapResponse);
+                const payload = parseSearchPayload(json);
+
+                if (payload && payload.total === 0 && payload.results.length === 0) {
+                    return { results: [], total: 0, pages: 0, validEmpty: true, profile, strategy: 'bootstrap' };
+                }
+
+                if (payload) {
+                    const results = selectImageResults(payload.results);
+                    if (results.length) {
+                        return {
+                            results,
+                            total: payload.total,
+                            pages: payload.pages,
+                            validEmpty: false,
+                            profile,
+                            strategy: 'bootstrap',
+                        };
+                    }
+                }
+
+                log.warning('Bootstrap data was empty or malformed. Trying embedded page data.');
+            } catch (error) {
+                log.warning(`Bootstrap request failed: ${shortError(error)}. Trying embedded page data.`);
+            }
+        }
+
+        const jsonLdResults = parseJsonLdImages(html, pageUrl);
+        if (jsonLdResults.length) {
+            return {
+                results: jsonLdResults,
+                total: jsonLdResults.length,
+                pages: 0,
+                validEmpty: false,
+                profile,
+                strategy: 'jsonld',
+            };
+        }
+
+        throw new Error('HTML page did not contain bootstrap or JSON-LD image data.');
+    }
+
+    async attempt(profileIndex, strategyIndex, pageNumber, baseUrl) {
+        const profile = PROFILES[profileIndex];
+        const strategy = STRATEGIES[strategyIndex];
+        const pageUrl = buildPageUrl(baseUrl, pageNumber);
+
+        if (strategy === 'json') return this.fetchJson(profile, pageUrl, baseUrl);
+        return this.fetchHtml(profile, pageUrl, baseUrl);
+    }
+
+    async fetchPage(pageNumber, baseUrl) {
+        const failures = [];
+        const attempts = Math.min(MAX_ATTEMPTS_PER_PAGE, PROFILES.length * STRATEGIES.length);
+
+        for (let offset = 0; offset < attempts; offset += 1) {
+            const profileIndex = (this.activeProfile + Math.floor(offset / STRATEGIES.length)) % PROFILES.length;
+            const strategyIndex = (this.activeStrategy + (offset % STRATEGIES.length)) % STRATEGIES.length;
+            const profile = PROFILES[profileIndex];
+            const strategy = STRATEGIES[strategyIndex];
+
+            try {
+                const result = await this.attempt(profileIndex, strategyIndex, pageNumber, baseUrl);
+
+                if (profileIndex !== this.activeProfile || strategyIndex !== this.activeStrategy) {
+                    this.switches += 1;
+                    log.info(`Request path recovered with profile=${profile} and strategy=${result.strategy}.`);
+                }
+                this.activeProfile = profileIndex;
+                this.activeStrategy = strategyIndex;
+                return result;
+            } catch (error) {
+                failures.push(`${profile}/${strategy}: ${shortError(error)}`);
+                log.warning(
+                    `Page ${pageNumber} attempt ${offset + 1} failed (${profile}/${strategy}): ${shortError(error)}`,
+                );
+            }
+        }
+
+        const recent = failures.slice(-3).join(' | ');
+        throw new Error(`Could not load page ${pageNumber} after ${failures.length} attempts. Last errors: ${recent}`);
+    }
+}
+
+async function createProxyConfiguration(proxyInput) {
+    if (!proxyInput || typeof proxyInput !== 'object') return undefined;
+
+    const customUrls = Array.isArray(proxyInput.proxyUrls) ? proxyInput.proxyUrls.filter(Boolean) : [];
+    const wantsApifyProxy = Boolean(proxyInput.useApifyProxy);
+
+    if (customUrls.length) return Actor.createProxyConfiguration(proxyInput);
+    if (wantsApifyProxy && Actor.isAtHome()) return Actor.createProxyConfiguration(proxyInput);
+    if (wantsApifyProxy) log.info('Apify Proxy requires a cloud run. Continuing without a proxy.');
+
+    return undefined;
+}
+
+function resolveBaseUrl(input) {
+    const suppliedUrl = normalizeText(input.startUrl) || normalizeText(input.url);
+    if (suppliedUrl) {
+        const normalized = normalizeSearchUrl(suppliedUrl);
+        if (normalized) return normalized;
+        log.warning('The supplied URL is not a Pixabay image search URL. Falling back to a keyword search.');
+    }
+
+    const keyword = normalizeText(input.keyword) || DEFAULT_KEYWORD;
+    const location = normalizeText(input.location);
+    return buildSearchUrl(keyword, location);
+}
+
+function resolveStopReason({ saved, resultsWanted, validEmpty, emptyPages, pageNumber, maxPages, totalPages }) {
+    if (saved >= resultsWanted) return 'target_reached';
+    if (validEmpty) return 'no_matches';
+    if (emptyPages >= PAGE_FAILURE_LIMIT) return 'no_new_results';
+    if (pageNumber > maxPages) return 'page_limit';
+    if (pageNumber > totalPages) return 'last_page';
+    return 'partial';
+}
+
+async function run() {
+    const input = (await Actor.getInput()) || {};
+    const resultsWanted = readPositiveInt(input.results_wanted, 20);
+    const maxPages = readPositiveInt(input.max_pages, 10);
+    const baseUrl = resolveBaseUrl(input);
+
+    log.info(`Pixabay image scraper starting | source=${baseUrl} | target=${resultsWanted} | max_pages=${maxPages}`);
+
+    const proxyConfiguration = await createProxyConfiguration(input.proxyConfiguration);
+    if (proxyConfiguration) log.info('Proxy configuration enabled.');
+
+    const engine = new PixabayEngine(proxyConfiguration);
+    const seen = new Set();
+
+    let saved = 0;
+    let pageNumber = 1;
+    let totalPages = maxPages;
+    let pagesProcessed = 0;
+    let emptyPages = 0;
+    let validEmpty = false;
+
+    while (
+        saved < resultsWanted &&
+        pageNumber <= maxPages &&
+        pageNumber <= totalPages &&
+        emptyPages < PAGE_FAILURE_LIMIT
+    ) {
+        let page;
+        try {
+            page = await engine.fetchPage(pageNumber, baseUrl);
+        } catch (error) {
+            if (saved === 0) throw error;
+            log.warning(`Stopping after page ${pageNumber} failed: ${shortError(error)}`);
+            pagesProcessed += 1;
+            break;
+        }
+
+        pagesProcessed += 1;
+
+        if (page.validEmpty) {
+            validEmpty = true;
+            break;
+        }
+
+        if (page.pages > 0) totalPages = Math.min(maxPages, page.pages);
+
+        const batch = [];
+        for (const result of page.results) {
+            if (saved + batch.length >= resultsWanted) break;
+
+            const item = mapResult(result);
+            if (!item) continue;
+
+            const key = getDedupKey(item);
+            if (!key || seen.has(key)) continue;
+            if (!item.pageUrl || (!item.imageUrl_large && !item.imageUrl_small)) continue;
+
+            seen.add(key);
+            batch.push(item);
+        }
+
+        if (batch.length) {
+            await Dataset.pushData(batch);
+            saved += batch.length;
+            emptyPages = 0;
+            log.info(
+                `Saved ${batch.length} images | total=${saved}/${resultsWanted} | page=${pageNumber} | path=${page.profile}/${page.strategy}`,
+            );
+        } else {
+            emptyPages += 1;
+            log.warning(`Page ${pageNumber} produced no new images | path=${page.profile}/${page.strategy}`);
+        }
+
+        pageNumber += 1;
+    }
+
+    const stopReason = resolveStopReason({
+        saved,
+        resultsWanted,
+        validEmpty,
+        emptyPages,
+        pageNumber,
+        maxPages,
+        totalPages,
+    });
+
+    if (saved === 0 && !validEmpty) {
+        throw new Error(
+            'No usable images were collected. Pixabay may have changed its response format or blocked the request.',
+        );
+    }
+
+    log.info(
+        `Finished | saved=${saved} | pages=${pagesProcessed} | request_path_switches=${engine.switches} | stop=${stopReason}`,
+    );
+}
 
 await Actor.init();
 
-function buildSearchSlug(keyword = '', location = '') {
-    return [keyword, location]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .join(' ')
-        .replace(/\s+/g, '-');
+try {
+    await run();
+    await Actor.exit();
+} catch (error) {
+    log.error(`Pixabay scraper failed: ${shortError(error)}`);
+    await Actor.exit({ exitCode: 1 });
 }
-
-function buildSearchUrl(keyword, location) {
-    const base = 'https://pixabay.com/images/search/';
-    const slug = buildSearchSlug(keyword, location);
-    return slug ? `${base}${encodeURIComponent(slug)}/` : base;
-}
-
-function normalizeUrl(url, keyword, location) {
-    try {
-        const parsed = new URL(url);
-        if (!parsed.hostname.includes('pixabay.com')) return buildSearchUrl(keyword, location);
-        if (!parsed.pathname.endsWith('/')) parsed.pathname += '/';
-        parsed.searchParams.delete('pagi');
-        return parsed.href;
-    } catch {
-        return buildSearchUrl(keyword, location);
-    }
-}
-
-function buildPageUrl(baseUrl, pageNumber) {
-    if (pageNumber === 1) return baseUrl;
-
-    const parsed = new URL(baseUrl);
-    parsed.searchParams.set('pagi', String(pageNumber));
-    return parsed.href;
-}
-
-function sanitizeValue(value) {
-    if (value == null) return undefined;
-    if (typeof value === 'string') {
-        const trimmed = value.trim();
-        return trimmed || undefined;
-    }
-    if (Array.isArray(value)) {
-        const cleaned = value.map((entry) => sanitizeValue(entry)).filter((entry) => entry !== undefined);
-        if (!cleaned.length) return undefined;
-        return cleaned;
-    }
-    if (typeof value === 'object') return value;
-    return value;
-}
-
-function flattenRecord(value, prefix = '') {
-    const output = {};
-
-    const appendValue = (currentValue, currentPrefix) => {
-        const cleaned = sanitizeValue(currentValue);
-        if (cleaned === undefined) return;
-
-        if (Array.isArray(cleaned)) {
-            if (cleaned.every((entry) => typeof entry !== 'object' || entry === null)) {
-                output[currentPrefix] = cleaned.join(', ');
-                return;
-            }
-
-            cleaned.forEach((entry, index) => {
-                if (typeof entry === 'object' && entry !== null) {
-                    appendValue(entry, `${currentPrefix}_${index}`);
-                } else if (entry !== undefined) {
-                    output[`${currentPrefix}_${index}`] = entry;
-                }
-            });
-            return;
-        }
-
-        if (typeof cleaned === 'object') {
-            for (const [key, nestedValue] of Object.entries(cleaned)) {
-                const nestedPrefix = currentPrefix ? `${currentPrefix}_${key}` : key;
-                appendValue(nestedValue, nestedPrefix);
-            }
-            return;
-        }
-
-        output[currentPrefix] = cleaned;
-    };
-
-    appendValue(value, prefix);
-    return output;
-}
-
-function mapResult(result) {
-    const item = {};
-    const fullPageUrl = result.href ? `https://pixabay.com${result.href}` : undefined;
-    const fullDownloadUrl = result.sources?.downloadUrl
-        ? `https://pixabay.com${result.sources.downloadUrl}`
-        : undefined;
-    const fullProfileUrl = result.user?.profileUrl
-        ? `https://pixabay.com${result.user.profileUrl}`
-        : undefined;
-    const tags = Array.isArray(result.tagList)
-        ? result.tagList
-            .map((entry) => (Array.isArray(entry) ? entry[0] : entry))
-            .map((entry) => String(entry || '').trim())
-            .filter(Boolean)
-        : [];
-
-    const flattened = flattenRecord({
-        ...result,
-        pageUrl: fullPageUrl,
-        downloadUrl: fullDownloadUrl,
-        profileUrl: fullProfileUrl,
-        imageUrl_small: result.sources?.['1x'],
-        imageUrl_large: result.sources?.['2x'],
-        tags,
-        username: result.user?.username,
-    });
-
-    for (const [key, value] of Object.entries(flattened)) {
-        if (
-            [
-                'sources_downloadUrl',
-                'sources_1x',
-                'sources_2x',
-                'user_profileUrl',
-                'user_username',
-                'tagList',
-                'tagLinks',
-                'attributionHtml',
-            ].includes(key)
-            || key.startsWith('tagList_')
-        ) {
-            continue;
-        }
-
-        item[key] = value;
-    }
-
-    return item;
-}
-
-function getDedupKey(item) {
-    return String(item.id || item.pageUrl || item.imageUrl_large || item.imageUrl_small || '');
-}
-
-async function safeGoto(page, targetUrl, retries = 3) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            return await page.goto(targetUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: 60000,
-            });
-        } catch (error) {
-            log.warning(`Navigation attempt ${attempt}/${retries} failed for ${targetUrl}: ${error.message}`);
-            if (attempt < retries) {
-                await page.waitForTimeout(2000 * attempt);
-            }
-        }
-    }
-
-    return null;
-}
-
-async function waitForCloudflare(page, timeoutMs = 15000) {
-    const start = Date.now();
-
-    while (Date.now() - start < timeoutMs) {
-        const title = await page.title().catch(() => '');
-        const html = await page.content().catch(() => '');
-
-        if (!title.includes('Just a moment') && !html.includes('cf-challenge') && !html.includes('cloudflare')) {
-            return true;
-        }
-
-        log.info('Cloudflare challenge detected. Waiting 2s for resolution...');
-        await page.waitForTimeout(2000);
-    }
-
-    return false;
-}
-
-async function fetchSearchPayload(page, targetUrl) {
-    return page.evaluate(async (url) => {
-        try {
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    Accept: 'application/json',
-                    'x-fetch-bootstrap': '1',
-                    'x-bootstrap-cache-miss': '1',
-                    'cache-control': 'max-age=0',
-                },
-                cache: 'no-store',
-                credentials: 'same-origin',
-            });
-
-            const text = await response.text();
-            let json = null;
-            try {
-                json = JSON.parse(text);
-            } catch {
-                json = null;
-            }
-
-            return {
-                ok: response.ok,
-                status: response.status,
-                contentType: response.headers.get('content-type'),
-                json,
-                bodyPreview: text.slice(0, 500),
-            };
-        } catch (error) {
-            return {
-                ok: false,
-                status: 0,
-                contentType: null,
-                json: null,
-                bodyPreview: String(error),
-            };
-        }
-    }, targetUrl);
-}
-
-async function main() {
-    try {
-        const input = (await Actor.getInput()) || {};
-        const {
-            keyword = '',
-            location = '',
-            url = '',
-            startUrl = '',
-            results_wanted: resultsWantedRaw = 20,
-            max_pages: maxPagesRaw = 999,
-            proxyConfiguration,
-        } = input;
-
-        const resultsWanted = Number.isFinite(+resultsWantedRaw)
-            ? Math.max(1, +resultsWantedRaw)
-            : Number.MAX_SAFE_INTEGER;
-        const maxPages = Number.isFinite(+maxPagesRaw) ? Math.max(1, +maxPagesRaw) : 999;
-
-        const isApifyCloud = Actor.isAtHome();
-        const shouldUseApifyProxy = Boolean(proxyConfiguration?.useApifyProxy);
-        const hasCustomProxyUrls = Array.isArray(proxyConfiguration?.proxyUrls) && proxyConfiguration.proxyUrls.length > 0;
-
-        let proxyConf;
-        if (proxyConfiguration && (hasCustomProxyUrls || (shouldUseApifyProxy && isApifyCloud))) {
-            proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
-        } else if (shouldUseApifyProxy && !isApifyCloud) {
-            log.info('Local run detected: running without proxy.');
-        }
-
-        const browserProxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
-        let initialUrl = buildSearchUrl(keyword, location);
-        if (url) initialUrl = normalizeUrl(url, keyword, location);
-        if (startUrl) initialUrl = normalizeUrl(startUrl, keyword, location);
-
-        log.info(`Starting Pixabay image scraper: ${initialUrl}`);
-        log.info(`Target: ${resultsWanted} images, max ${maxPages} pages`);
-
-        const userDataDir = path.join(os.tmpdir(), `pixabay-${randomBytes(6).toString('hex')}`);
-        const chromePath = process.env.APIFY_CHROME_EXECUTABLE_PATH || process.env.PLAYWRIGHT_CHROME_EXECUTABLE_PATH;
-        const launchCandidates = [
-            ...(chromePath ? [{ executablePath: chromePath, label: `Chrome at ${chromePath}` }] : []),
-            { channel: 'chrome', label: 'Chrome (channel lookup)' },
-            { label: 'bundled Chromium' },
-        ];
-
-        let browserContext;
-        for (const { executablePath, channel, label } of launchCandidates) {
-            try {
-                browserContext = await chromium.launchPersistentContext(userDataDir, {
-                    ...(executablePath ? { executablePath } : {}),
-                    ...(channel ? { channel } : {}),
-                    headless: false,
-                    noViewport: true,
-                    proxy: browserProxyUrl ? { server: browserProxyUrl } : undefined,
-                });
-                log.info(`Browser launched: ${label}`);
-                break;
-            } catch (error) {
-                log.warning(`Could not launch ${label}: ${error.message}`);
-            }
-        }
-
-        if (!browserContext) {
-            throw new Error('All browser launch attempts failed.');
-        }
-
-        const page = await browserContext.newPage();
-
-        try {
-            await page.route('**/*', (route) => {
-                const resourceType = route.request().resourceType();
-                const requestUrl = route.request().url();
-
-                if (
-                    ['image', 'font', 'media'].includes(resourceType)
-                    || requestUrl.includes('google-analytics')
-                    || requestUrl.includes('googletagmanager')
-                    || requestUrl.includes('doubleclick')
-                    || requestUrl.includes('snowplow')
-                ) {
-                    return route.abort();
-                }
-
-                return route.continue();
-            });
-
-            const seen = new Set();
-            let saved = 0;
-            let pageNumber = 1;
-            let totalPages = maxPages;
-            let consecutiveFailures = 0;
-
-            while (
-                saved < resultsWanted
-                && pageNumber <= maxPages
-                && pageNumber <= totalPages
-                && consecutiveFailures < 3
-            ) {
-                const pageUrl = buildPageUrl(initialUrl, pageNumber);
-                log.info(`Loading page ${pageNumber}: ${pageUrl}`);
-
-                const response = await safeGoto(page, pageUrl);
-                if (!response) {
-                    consecutiveFailures++;
-                    pageNumber++;
-                    continue;
-                }
-
-                await waitForCloudflare(page);
-                await page.waitForTimeout(1200 + Math.floor(Math.random() * 800));
-
-                const payload = await fetchSearchPayload(page, pageUrl);
-                const results = payload.json?.page?.results || [];
-                totalPages = payload.json?.page?.pages || totalPages;
-                const totalResults = payload.json?.page?.total || 0;
-
-                if (!results.length) {
-                    consecutiveFailures++;
-                    log.warning(
-                        `No structured results found on page ${pageNumber}. Status: ${payload.status}. Type: ${payload.contentType || 'n/a'}. Body preview: ${payload.bodyPreview}`,
-                    );
-                    pageNumber++;
-                    continue;
-                }
-
-                log.info(
-                    `Structured payload ready: page ${pageNumber}/${totalPages}, ${results.length} records, ${totalResults} total available.`,
-                );
-
-                const batch = [];
-                for (const result of results) {
-                    if (saved + batch.length >= resultsWanted) break;
-
-                    const item = mapResult(result);
-                    const dedupKey = getDedupKey(item);
-                    if (!dedupKey || seen.has(dedupKey)) continue;
-                    if (!item.pageUrl || (!item.imageUrl_large && !item.imageUrl_small)) continue;
-
-                    seen.add(dedupKey);
-                    batch.push(item);
-                }
-
-                if (batch.length) {
-                    await Dataset.pushData(batch);
-                    saved += batch.length;
-                    log.info(`Saved ${batch.length} unique items (total: ${saved}/${resultsWanted})`);
-                } else {
-                    log.warning(`Page ${pageNumber} produced only duplicates or incomplete records.`);
-                }
-
-                consecutiveFailures = 0;
-                pageNumber++;
-                await page.waitForTimeout(1000 + Math.floor(Math.random() * 1000));
-            }
-
-            if (consecutiveFailures >= 3) {
-                log.warning('Stopped after 3 consecutive pages without usable structured data.');
-            }
-
-            log.info(`Finished! Saved ${saved} unique images total.`);
-        } finally {
-            await page.close().catch(() => {});
-            await browserContext.close().catch(() => {});
-        }
-    } finally {
-        await Actor.exit();
-    }
-}
-
-main().catch((error) => {
-    log.error(`Fatal error: ${error.message}`);
-    process.exit(1);
-});
